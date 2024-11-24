@@ -253,10 +253,14 @@ void emufs_close(int handle, int type){
         * Close the file/directory handle
     */
 
-    if(type)
-        dir[handle].mount_point = -1;
-    else 
-        files[handle].mount_point = -1;
+    // Check if it is a directory handle
+    if (type == 1) {
+        // Reset the mount point for the directory handle to -1
+        memset(&dir[handle], 0, sizeof(struct directory_t));
+    } else {
+        // Reset the mount point for the file handle to -1
+        memset(&files[handle], 0, sizeof(struct file_t));
+    }
 }
 
 int delete_entity(int mount_point, int inodenum){
@@ -310,31 +314,49 @@ int emufs_delete(int dir_handle, char* path){
                          1, success
     */
 
+    // Get the mount point from the directory handle
     int mnt = dir[dir_handle].mount_point;
-    if(mnt==-1){
-        printf("Invalid directory handle");
+    if (mnt == -1) {
+        printf("Invalid directory handle\n");
         return -1;
     }
 
+    // Get the inode number of the entity to be deleted using return_inode function
     int inodenum = return_inode(mnt, dir[dir_handle].inode_number, path);
-    if(inodenum<=0)
+    if (inodenum <= 0) {
         return -1;
-    int par = delete_entity(mnt, inodenum);
-    
-    if(par<0)
-        return -1;
-    
-    struct inode_t inode;
-    read_inode(mnt, par, &inode);
-    int del=0;
-    for(int i=0; i<inode.size; i++){
-        if(del)
-            inode.mappings[i-1]=inode.mappings[i];
-        if(inode.mappings[i]==inodenum)
-            del=1;
     }
-    inode.size--;
-    write_inode(mnt, par, &inode);
+
+    // Perform the deletion of the entity (remove it from directory)
+    int parent_inode_num = delete_entity(mnt, inodenum);
+    if (parent_inode_num < 0) {
+        return -1;
+    }
+
+    // Read the parent inode to update the mappings after deletion
+    struct inode_t parent_inode;
+    read_inode(mnt, parent_inode_num, &parent_inode);
+
+    // Flag to indicate if the entity has been found and deleted
+    int entity_found = 0;
+
+    // Traverse through the mappings and shift entries after the deleted one
+    for (int i = 0; i < parent_inode.size; i++) {
+        if (entity_found) {
+            parent_inode.mappings[i - 1] = parent_inode.mappings[i];
+        }
+        if (parent_inode.mappings[i] == inodenum) {
+            entity_found = 1;
+        }
+    }
+
+    // Decrease the size of the directory
+    if (parent_inode.size > 0) {
+        parent_inode.size--;
+    }
+
+    // Write the updated parent inode back to the disk
+    write_inode(mnt, parent_inode_num, &parent_inode);
 
     return 1;
 }
@@ -349,46 +371,61 @@ int emufs_create(int dir_handle, char* name, int type){
                          1, success
     */
 
-    if(strlen(name)>MAX_ENTITY_NAME)
+    // Validate the name length and check for invalid starting characters
+    if (strlen(name) > MAX_ENTITY_NAME || name[0] == '\0' || name[0] == '/' || name[0] == '.') {
         return -1;
-    if(name[0]==0 || name[0]=='/' || name[0]=='.')
-        return -1;
+    }
 
-    struct inode_t inode;
-    int mount_point = dir[dir_handle].mount_point;
-    read_inode(mount_point, dir[dir_handle].inode_number, &inode);
-
+    // Prepare the name buffer and copy the name into it
     char ename[MAX_ENTITY_NAME];
-    memset(ename,0,MAX_ENTITY_NAME);
-    for(int i=0; i<strlen(name); i++)
-        ename[i]=name[i];
+    memset(ename, 0, MAX_ENTITY_NAME);
+    strncpy(ename, name, MAX_ENTITY_NAME - 1); // Safely copy the name to the buffer
 
-    if(inode.size==4)
+    // Get the mount point and parent inode for the directory where the file or directory will be created
+    int mount_point = dir[dir_handle].mount_point;
+    struct inode_t parent_inode;
+    read_inode(mount_point, dir[dir_handle].inode_number, &parent_inode);
+
+    // Check if the directory is full (limit of 4 entries)
+    if (parent_inode.size >= 4) {
         return -1;
+    }
 
-    for(int i=0; i<inode.size; i++){
-        struct inode_t entry;
-        read_inode(mount_point, inode.mappings[i], &entry);
-        if(entry.type==type){
-            if(memcmp(ename,entry.name,MAX_ENTITY_NAME)==0)
-                return -1;
+    // Check if an entry with the same name already exists in the directory
+    for (int i = 0; i < parent_inode.size; i++) {
+        struct inode_t entry_inode;
+        read_inode(mount_point, parent_inode.mappings[i], &entry_inode);
+        
+        // Compare the name and type (file or directory) of each existing entry
+        if (entry_inode.type == type && strncmp(ename, entry_inode.name, MAX_ENTITY_NAME) == 0) {
+            return -1; // Entity with the same name and type already exists
         }
     }
 
+    // Allocate a new inode for the new entity
     int new_inodenum = alloc_inode(mount_point);
-    inode.mappings[inode.size] = new_inodenum;
-    inode.size++;
-    
-    write_inode(mount_point, dir[dir_handle].inode_number, &inode);
+    if (new_inodenum == -1) {
+        return -1; // Error allocating inode
+    }
 
-    inode.size = 0;
-    inode.parent = dir[dir_handle].inode_number;
-    inode.type = type;
-    memcpy(inode.name,ename,MAX_ENTITY_NAME);
+    // Add the new inode number to the parent directory's mappings
+    parent_inode.mappings[parent_inode.size] = new_inodenum;
+    parent_inode.size++;
 
-    write_inode(mount_point, new_inodenum, &inode);
+    // Write the updated parent inode back to the disk
+    write_inode(mount_point, dir[dir_handle].inode_number, &parent_inode);
 
-    return 1;
+    // Initialize the new inode for the new entity (file or directory)
+    struct inode_t new_inode;
+    memset(&new_inode, 0, sizeof(struct inode_t));
+    new_inode.type = type;
+    new_inode.parent = dir[dir_handle].inode_number;
+    strncpy(new_inode.name, ename, MAX_ENTITY_NAME);
+
+    // Write the new inode to disk
+    write_inode(mount_point, new_inodenum, &new_inode);
+
+    return 1; // Success
 }
 
 int open_file(int dir_handle, char* path){
@@ -402,26 +439,36 @@ int open_file(int dir_handle, char* path){
                          1, success
     */
 
+    // Retrieve the mount point for the directory handle
     int mnt = dir[dir_handle].mount_point;
 
+    // Retrieve the inode number using return_inode
     int inodenum = return_inode(mnt, dir[dir_handle].inode_number, path);
-    if(inodenum==-1)
-        return -1;
+    if (inodenum == -1) {
+        return -1; // Inode not found
+    }
 
+    // Read the inode for the file to check its type
     struct inode_t inode;
     read_inode(mnt, inodenum, &inode);
 
-    if(inode.type)
-        return -1;
+    // Check if the inode corresponds to a file, not a directory
+    if (inode.type == 1) {
+        return -1; // Path is a directory, not a file
+    }
 
+    // Allocate a new file handle
     int file_handle = alloc_file_handle();
-    if(file_handle==-1)
-        return -1;
+    if (file_handle == -1) {
+        return -1; // Error allocating file handle
+    }
 
+    // Initialize the file handle with relevant information
     files[file_handle].mount_point = mnt;
     files[file_handle].inode_number = inodenum;
-    files[file_handle].offset = 0;
+    files[file_handle].offset = 0; // Initialize the offset to the start of the file
 
+    // Return the file handle on success
     return file_handle;
 }
 
@@ -445,20 +492,36 @@ int emufs_read(int file_handle, char* buf, int size){
 
     struct inode_t inode;
     read_inode(mnt, inodenum, &inode);
-    if(inode.size < seek+size)
+
+    // If the file size is less than the offset + size, return error
+    if (inode.size < seek + size) {
         return -1;
-    
-    char temp_buf[BLOCKSIZE];
-    for(int i=seek/BLOCKSIZE; i*BLOCKSIZE<(seek+size); i++){
-        int a, b;
-        a = i*BLOCKSIZE > seek ? i*BLOCKSIZE : seek;
-        b = (i+1)*BLOCKSIZE < (seek+size) ? (i+1)*BLOCKSIZE : (seek+size);
-        
-        read_datablock(mnt, inode.mappings[i], temp_buf);
-        memcpy(buf+a-seek,temp_buf+a-i*BLOCKSIZE,b-a);
     }
 
-    files[file_handle].offset += size;
+    int bytes_read = 0;
+    char temp_buf[BLOCKSIZE]; // Temporary buffer to read blocks
+
+    // Read data block by block
+    for (int i = seek / BLOCKSIZE; bytes_read < size; i++) {
+        // Calculate the offset within the block
+        int block_offset = (i == seek / BLOCKSIZE) ? (seek % BLOCKSIZE) : 0;
+        int remaining_size = size - bytes_read;
+
+        // Read the block into the temp buffer
+        read_datablock(mnt, inode.mappings[i], temp_buf);
+
+        // Calculate the amount to copy from the temp buffer to the user buffer
+        int to_copy = (remaining_size < BLOCKSIZE - block_offset) ? remaining_size : (BLOCKSIZE - block_offset);
+
+        // Copy the data from the temp buffer to the user's buffer
+        memcpy(buf + bytes_read, temp_buf + block_offset, to_copy);
+
+        // Update the bytes read
+        bytes_read += to_copy;
+    }
+
+    // Update the file offset after reading
+    files[file_handle].offset += bytes_read;
 
     return 1;
 }
@@ -483,55 +546,69 @@ int emufs_write(int file_handle, char* buf, int size){
     int seek = files[file_handle].offset;
     int inodenum = files[file_handle].inode_number;
 
-    if(seek+size > BLOCKSIZE*MAX_FILE_SIZE)
+    // Check if writing beyond maximum file size
+    if (seek + size > BLOCKSIZE * MAX_FILE_SIZE) {
         return -1;
+    }
 
+    // Read the superblock to check for available space
     struct superblock_t superblock;
     read_superblock(mnt, &superblock);
 
+    // Read the inode to get current file information
     struct inode_t inode;
     read_inode(mnt, inodenum, &inode);
 
-    if(seek+size > inode.size){
-        int num_req;
-        int k=(seek+size)/BLOCKSIZE;
-        num_req = k;
-        if(k*BLOCKSIZE < (seek+size))
-            num_req++;
-        
-        k=inode.size/BLOCKSIZE;
-        num_req-=k;
-        if(k*BLOCKSIZE<inode.size)
-            num_req--;
-        
-        if(superblock.disk_size-superblock.used_blocks < num_req)
-            return -1;
+    // Calculate the number of blocks needed for the new write size
+    int end_offset = seek + size;
+    int new_required_blocks = (end_offset + BLOCKSIZE - 1) / BLOCKSIZE; // round up
+    int current_blocks = (inode.size + BLOCKSIZE - 1) / BLOCKSIZE;
+
+    // If the file needs more blocks, check if there is enough free space
+    if (new_required_blocks > current_blocks) {
+        int blocks_needed = new_required_blocks - current_blocks;
+        if (superblock.disk_size - superblock.used_blocks < blocks_needed) {
+            return -1; // Not enough space on the disk
+        }
     }
 
+    // Temporary buffer to hold data during the write process
     char temp_buf[BLOCKSIZE];
-    int num_blocks = inode.size/BLOCKSIZE;
-    if(num_blocks*BLOCKSIZE<inode.size)
-        num_blocks++;
-    for(int i=seek/BLOCKSIZE; i*BLOCKSIZE<(seek+size); i++){
-        int a, b;
-        a = i*BLOCKSIZE > seek ? i*BLOCKSIZE : seek;
-        b = (i+1)*BLOCKSIZE < (seek+size) ? (i+1)*BLOCKSIZE : (seek+size);
-        if(i==num_blocks){
+    int bytes_written = 0;
+
+    // Write data block by block
+    for (int i = seek / BLOCKSIZE; bytes_written < size; i++) {
+        int block_start = (i == seek / BLOCKSIZE) ? seek % BLOCKSIZE : 0;
+        int block_end = ((i + 1) * BLOCKSIZE <= end_offset) ? BLOCKSIZE : end_offset - i * BLOCKSIZE;
+
+        // Allocate new block if necessary
+        if (i >= current_blocks) {
             inode.mappings[i] = alloc_datablock(mnt);
-            memcpy(temp_buf,buf+a-seek,b-a);
-            write_datablock(mnt, inode.mappings[i], temp_buf);
-            num_blocks++;
         }
-        else{
-            read_datablock(mnt, inode.mappings[i], temp_buf);
-            memcpy(temp_buf+a-i*BLOCKSIZE,buf+a-seek,b-a);
-            write_datablock(mnt, inode.mappings[i], temp_buf);
-        }
+
+        // Read the current block into the temp buffer
+        read_datablock(mnt, inode.mappings[i], temp_buf);
+
+        // Write to the temp buffer from the user buffer (buf)
+        memcpy(temp_buf + block_start, buf + bytes_written, block_end - block_start);
+
+        // Write the updated temp buffer back to the disk
+        write_datablock(mnt, inode.mappings[i], temp_buf);
+
+        // Update the bytes written
+        bytes_written += block_end - block_start;
     }
-    inode.size = inode.size > (seek+size) ? inode.size : (seek+size);
+
+    // Update the inode size if the file has grown
+    if (end_offset > inode.size) {
+        inode.size = end_offset;
+    }
+
+    // Write the updated inode back to disk
     write_inode(mnt, inodenum, &inode);
 
-    files[file_handle].offset+=size;
+    // Update the file offset in the file handle
+    files[file_handle].offset += size;
 
     return 1;
 }
@@ -545,16 +622,25 @@ int emufs_seek(int file_handle, int nseek){
                          1, success
     */
 
-    int mnt = files[file_handle].mount_point;
-    int seek = files[file_handle].offset;
-    int inodenum = files[file_handle].inode_number;
     
-    if(nseek>0){
-        struct inode_t inode;
-        read_inode(mnt, inodenum, &inode);
-        if(inode.size < nseek+seek)
-            return -1;
+    int mnt = files[file_handle].mount_point;
+    int current_offset = files[file_handle].offset;
+    int inodenum = files[file_handle].inode_number;
+
+    // Check if the new seek position will exceed the file size
+    if (nseek > 0) {
+        return -1; // Cannot seek to a negative position
     }
+
+    struct inode_t inode;
+    read_inode(mnt, inodenum, &inode);
+
+    // Ensure the seek position doesn't exceed the file size
+    if (current_offset + nseek > inode.size) {
+        return -1; // Seek exceeds file size
+    }
+
+    // Update the file handle's offset
     files[file_handle].offset += nseek;
 
     return 1;
