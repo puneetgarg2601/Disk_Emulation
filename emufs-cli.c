@@ -26,9 +26,11 @@ int main() {
     char file_name[32];
     char buf[256*2];
     int choice;
-    int dir_handle = -1;
+    int dir_handle = -1, dir_handle1=-1;
 
     while (1) {
+        dir_handle = dir_handle1;
+        // printf("before menu Directory handle: %d\n", dir_handle);
         print_menu();
         printf("Enter your choice: ");
         scanf("%d", &choice);
@@ -53,12 +55,13 @@ int main() {
 
                         // Change to the root directory after filesystem creation
                         dir_handle = open_root(mount_point);
+                        dir_handle1 = dir_handle;
                         if (dir_handle == -1) {
                             printf("Error changing to root directory.\n");
                         } else {
                             printf("Changed to root directory successfully.\n");
                         }
-                        printf("Directory handle: %d\n", dir_handle);
+                        // printf("Directory handle: %d\n", dir_handle);
                     } else {
                         printf("Error initializing file system.\n");
                     }
@@ -68,7 +71,7 @@ int main() {
             case 2:  // Mount device
                 printf("Enter device name: ");
                 scanf("%s", device_name);
-                mount_point = opendevice(device_name, 64);
+                mount_point = opendevice(device_name, 60);
                 if (mount_point == -1) {
                     printf("Error mounting device.\n");
                 } else {
@@ -77,9 +80,11 @@ int main() {
 
                     // Change to the root directory after mounting the device
                     int dir_handle = open_root(mount_point);
+                    dir_handle1 = dir_handle;
                     if (dir_handle == -1) {
                         printf("Error changing to root directory.\n");
                     } else {
+                        // printf("Directory handle: %d\n", dir_handle);
                         printf("Changed to root directory successfully.\n");
                     }
                 }
@@ -97,7 +102,10 @@ int main() {
 
             case 4:  // View file system metadata
                 if (mount_point != -1) {
+                    // printf("Directory handle: %d\n", dir_handle);
                     fsdump(mount_point);
+                    // printf("Directory handle: %d\n", dir_handle);
+
                 } else {
                     printf("No device is mounted.\n");
                 }
@@ -108,12 +116,14 @@ int main() {
                     printf("Enter directory path: ");
                     scanf("%s", dir_name);
                     dir_name[strlen(dir_name)] = 0;
-                    if (change_dir(dir_handle, dir_name) == -1) {
+                    // printf("Directory handle: %d\n", dir_handle);
+                    if (dir_handle1 = change_dir(dir_handle, dir_name) == -1) {
                         printf("Error changing directory.\n");
                     } else {
+                        
                         printf("Changed directory successfully.\n");
                     }
-                    printf("Directory Handle: %d and Mount Point: %d", dir_handle, mount_point);
+                    // printf("Directory Handle: %d and Mount Point: %d\n", dir_handle, mount_point);
                 } else {
                     printf("No device is mounted.\n");
                 }
@@ -211,18 +221,39 @@ int main() {
                             // Remove the trailing newline character added by fgets
                             buf[strcspn(buf, "\n")] = '\0'; 
                         }
-                        printf("Input: %s\n", buf);
+                        // printf("Input: %s\n", buf);
                         int len = strlen(buf);
                         buf[strlen(buf)] = 0;
-                        int result = emufs_write(file_handle, buf, len);
-                        if (result == -1) {
-                            puts("Error writing to file.\n");
-                            break;
+                        if(len > 256*4){
+                            printf("Allowed write limit in a file is %d Bytes\n", 256*4);
                         }
-                        fflush(stdout); // Flush the standard output stream
-                        // tcflush(STDIN_FILENO, TCIFLUSH);
-                        
-                        while ((c = getchar()) != '\n' && c != EOF);
+                        else{
+                            
+                            int bytes_written = 0;
+                            char temp_buf[256];  // Buffer for 256-byte chunks
+                            while (bytes_written < len) {
+                                int chunk_size = (len - bytes_written > 255) ? 255 : (len - bytes_written);
+                                strncpy(temp_buf, buf + bytes_written, chunk_size);
+                                temp_buf[chunk_size] = 0;  // Null-terminate the chunk
+                                int result = emufs_write(file_handle, temp_buf, chunk_size);
+                                if (result == -1) {
+                                    puts("Error writing to file.\n");
+                                    break;
+                                }
+
+                                bytes_written += chunk_size;
+                            }
+
+                            // int result = emufs_write(file_handle, buf, len);
+                            // if (result == -1) {
+                            //     puts("Error writing to file.\n");
+                            //     break;
+                            // }
+                            fflush(stdout); // Flush the standard output stream
+                            
+                            while ((c = getchar()) != '\n' && c != EOF);
+                            emufs_close(file_handle, 0);
+                        }
                         
                         // if(total_bytes > 256*4){
                         //     printf("Allowed write limit in a file is %d Bytes\n", 256*4);
@@ -247,7 +278,6 @@ int main() {
                         //     }
                         // }
                         
-                        emufs_close(file_handle, 0);
                     }
                 } else {
                     puts("No device is mounted.\n");
