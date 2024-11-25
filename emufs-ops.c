@@ -239,8 +239,9 @@ int change_dir(int dir_handle, char* path){
 
     // If the inode represents a directory, update the dir_handle's inode number
     if (inode.type == 1) {  // Type 1 indicates it's a directory
+    // printf("inside inode type, inode number: %d\n", inode_number);
         dir[dir_handle].inode_number = inode_number;
-        return 1;  // Successfully changed the directory
+        return inode_number;  // Successfully changed the directory
     }
 
     // If it's not a directory, return an error
@@ -483,7 +484,7 @@ int emufs_read(int file_handle, char* buf, int size){
             * Then use this buffer to populate buf (use memcpy)
         
         * Return value: -1, error
-                         1, success
+                         Number of bytes read, success
     */
 
     int mnt = files[file_handle].mount_point;
@@ -523,7 +524,7 @@ int emufs_read(int file_handle, char* buf, int size){
     // Update the file offset after reading
     files[file_handle].offset += bytes_read;
 
-    return 1;
+    return bytes_read;
 }
 
 int emufs_write(int file_handle, char* buf, int size){

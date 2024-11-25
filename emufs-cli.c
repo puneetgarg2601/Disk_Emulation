@@ -148,7 +148,7 @@ int main() {
                 if (mount_point != -1 && dir_handle != -1) {
                     printf("Enter file name: ");
                     scanf("%s", file_name);
-                    printf("File name: %s and length is %ld\n", file_name, strlen(file_name));
+                    // printf("File name: %s and length is %ld\n", file_name, strlen(file_name));
                     file_name[strlen(file_name)] = 0;
                     if (emufs_create(dir_handle, file_name, 0) == -1) {
                         printf("Error creating file.\n");
